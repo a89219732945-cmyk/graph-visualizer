@@ -7,7 +7,11 @@ from math import dist,sqrt
 
 class Node:
     def __init__(self,x,y):
-        self.pos = (x,y)
+        self.pos = [x,y]
+        self.vel = [0,0]
+        self.acc = [0,0]
+        self.fixed = False
+
     def __str__(self):
         return f'Node {self.pos}'
 
@@ -129,6 +133,116 @@ class Graph:
             graph[v].append(u)
         return graph
 
+    def apply_acceleration(self,dt):
+        for node in self.nodes:
+            if node.fixed:
+                continue
+            node.vel[0]+=node.acc[0]*dt
+            node.vel[1]+=node.acc[1]*dt
+            node.pos[0]+=node.vel[0]*dt
+            node.pos[1]+=node.vel[1]*dt
+
+    def update_physics(self,phys):
+        for node in self.nodes:
+            node.acc=[0,0]
+
+        phys.coulomb_force(self)
+        phys.force_attraction(self)
+        phys.force_reduction(self)
+
+        self.apply_acceleration(1/60)
+
+
+
+class Physics:
+    def __init__(self):
+        self.repulsion=1000000
+        self.reduction=-10
+        self.min_dist=1e-6
+        self.attraction=5
+
+    def coulomb_force(self,gr):
+        for node_1 in gr.nodes:
+            if node_1.fixed:
+                continue
+            total_force=[0,0]
+            for node_2 in gr.nodes:
+                if node_1==node_2:
+                    continue
+                x1,y1=node_1.pos
+                x2,y2=node_2.pos
+
+                rx=x1-x2
+                ry=y1-y2
+                if rx==0:rx=self.min_dist
+                if ry==0:ry=self.min_dist
+                sqr_c=(ry/rx)*(ry/rx)
+
+                d=dist((x1,y1),(x2,y2))
+                if d==0:d=self.min_dist
+                force= self.repulsion / (d * d)
+
+                sqr_force = force*force
+                sqr_force_x = sqr_force/(1+sqr_c)
+                sqr_force_y = sqr_force - sqr_force_x
+
+                force_x = sqrt(sqr_force_x) * (1 if rx > 0 else -1)
+                force_y = sqrt(sqr_force_y) * (1 if ry > 0 else -1)
+
+                total_force[0]+=force_x
+                total_force[1]+=force_y
+            node_1.acc[0] += total_force[0]
+            node_1.acc[1] += total_force[1]
+
+    def force_attraction(self,gr):
+        for edge in gr.edges:
+            u,v=edge.u,edge.v
+            node_1=gr.nodes[u]
+            node_2=gr.nodes[v]
+            x1, y1 = node_1.pos
+            x2, y2 = node_2.pos
+
+            rx = x1 - x2
+            ry = y1 - y2
+
+            if rx == 0: rx = self.min_dist
+            if ry == 0: ry = self.min_dist
+
+            sqr_c = (ry / rx) * (ry / rx)
+
+            d = dist((x1, y1), (x2, y2))
+            force=d*self.attraction
+
+            sqr_force = force * force
+            sqr_force_x = sqr_force / (1 + sqr_c)
+            sqr_force_y = sqr_force - sqr_force_x
+
+            force_x = sqrt(sqr_force_x) * (-1 if rx > 0 else 1)
+            force_y = sqrt(sqr_force_y) * (-1 if ry > 0 else 1)
+
+            node_1.acc[0]+=force_x
+            node_1.acc[1]+=force_y
+
+            node_2.acc[0] -= force_x
+            node_2.acc[1] -= force_y
+
+    def force_reduction(self,gr):
+        for node in gr.nodes:
+            if node.fixed:
+                continue
+            vx,vy=node.vel
+            anti_force_x=vx*self.reduction
+            anti_force_y=vy*self.reduction
+
+            node.acc[0]+=anti_force_x
+            node.acc[1]+=anti_force_y
+
+
+
+
+
+
+
 class Camera:
     def __init__(self):
         self.x=0
@@ -148,13 +262,13 @@ class Camera:
         x,y=coordinates
         real_x = x / self.zoom + self.x
         real_y = y / self.zoom + self.y
-        return real_x, real_y
+        return [real_x, real_y]
 
     def real_to_screen(self, coordinates):
         x, y = coordinates
         screen_x = (x - self.x) * self.zoom
         screen_y = (y - self.y) * self.zoom
-        return screen_x, screen_y
+        return [screen_x, screen_y]
 
     def zoom_in(self,coordinates):
         if self.zoom*1.1<=self.max_zoom:
@@ -270,6 +384,7 @@ class EditorState:
         self.visualisation = False
         self.start_node=None
         self.end_node=None
+        self.physics=False
 
     def link_mode_off(self):
         self.link_mode=False
@@ -289,6 +404,18 @@ class EditorState:
         state.selected_node = None
 
 
+
+
+
+
+
+
+
+
+
+
+
+
 def new_edge():
     if state.clicked_on_node:
         if state.first_link is None:
@@ -302,9 +429,12 @@ def new_edge():
                     break
             if not exists:
                 graph.edges.append(Edge(state.first_link, state.selected_node))
+            else:
+                print('Already exists')
             state.first_link = None
     else:
         state.first_link = None
+
 
 
 
@@ -320,6 +450,8 @@ radius = 30
 state = EditorState()
 graph=Graph()
 camera = Camera()
+physics = Physics()
+
 
 algorithm=AlgorithmController()
 
@@ -348,7 +480,7 @@ while running:
                         algorithm.next_step()
                         print(algorithm.current_step)
 
-            if event.key == pygame.K_r:
+            if event.key == pygame.K_c:
                 state.visualisation = not state.visualisation
                 if state.visualisation and state.end_node is not None:
                     state.link_mode_off()
@@ -356,6 +488,15 @@ while running:
                 else:
                     state.visualisation=False
                 print(f"Визуализация: {'ВКЛ' if state.visualisation else 'ВЫКЛ'}")
+            if event.key == pygame.K_f:
+                state.physics = not state.physics
+
+            if event.key == pygame.K_r:
+                camera.x=0
+                camera.y=0
+                camera.zoom=1
+
+
 
 
         if event.type == pygame.MOUSEBUTTONDOWN:
@@ -368,6 +509,7 @@ while running:
                     state.clicked_on_node = False
                 else:
                     state.clicked_on_node = True
+                    graph.nodes[state.selected_node].fixed=True
 
                 mods = pygame.key.get_mods()
 
@@ -408,7 +550,11 @@ while running:
 
         if event.type == pygame.MOUSEBUTTONUP:
             if event.button == 1:
+                if state.selected_node is not None:
+                    graph.nodes[state.selected_node].fixed = False
+                    graph.nodes[state.selected_node].vel=[0,0]
                 state.selected_node = None
+
             elif event.button == 2:
                 state.panning = False
             elif event.button == 3:
@@ -429,6 +575,11 @@ while running:
     if state.selected_node is not None and not state.link_mode and not state.visualisation:
         if state.selected_node<len(graph.nodes):
             graph.nodes[state.selected_node].pos = camera.screen_to_real(pygame.mouse.get_pos())
+
+
+    if state.physics:
+        graph.update_physics(physics)
+
 
     screen.fill('white')
 

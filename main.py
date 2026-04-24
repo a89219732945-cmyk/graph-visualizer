@@ -1,5 +1,6 @@
 import pygame
 import sys
+import random
 
 from algorithms import bfs, dfs
 from math import dist,sqrt
@@ -50,6 +51,7 @@ class Graph:
     def __init__(self):
         self.nodes=[]
         self.edges=[]
+        self.cell_size = 200
 
     def __str__(self):
         return f'nodes {self.nodes} \n edges {self.edges}'
@@ -124,6 +126,42 @@ class Graph:
                     pygame.draw.circle(screen, 'black', node_screen, radius)
             pygame.draw.circle(screen, 'darkgrey', node_screen, radius, 4)
 
+
+    # def draw_grid(self):
+    #     if not state.show_grid:
+    #         return
+    #     w,h=screen.get_size()
+    #
+    #     top_left=(camera.x,camera.y)
+    #     bottom_right=(camera.x+w/camera.zoom,camera.y+h/camera.zoom)
+
+    def draw_grid(self, cam):
+        if not state.show_grid:
+            return
+
+        w, h = screen.get_size()
+        top_left = cam.screen_to_real((0, 0))
+        bottom_right = cam.screen_to_real((w, h))
+
+        min_cx = int(top_left[0] // self.cell_size)
+        max_cx = int(bottom_right[0] // self.cell_size) + 1
+        min_cy = int(top_left[1] // self.cell_size)
+        max_cy = int(bottom_right[1] // self.cell_size) + 1
+
+        for cx in range(min_cx,max_cx+1):
+            x=cx*self.cell_size
+            screen_x=(x-cam.x)*cam.zoom
+            pygame.draw.line(screen,(200,200,200),(screen_x,0),(screen_x,h))
+
+        for cy in range(min_cy,max_cy+2):
+            y=cy*self.cell_size
+            screen_y=(y-cam.y)*cam.zoom
+            pygame.draw.line(screen,(200,200,200),(0,screen_y),(w,screen_y))
+
+
+
+
+
     def build_adjacency_list(self):
         graph = [[] for _ in range(len(self.nodes))]
         for edge in self.edges:
@@ -152,45 +190,81 @@ class Graph:
 
         self.apply_acceleration(1/60)
 
+    def build_grid(self):
+        grid = {}
+        for i, node in enumerate(self.nodes):
+            node_x, node_y = node.pos
+            cx = int(node_x // self.cell_size)
+            cy = int(node_y // self.cell_size)
+            key = (cx, cy)
+            if key not in grid:
+                grid[key] = []
+            grid[key].append(i)
+        return grid
 
 
 class Physics:
     def __init__(self):
         self.repulsion=1000000
-        self.reduction=-10
-        self.min_dist=1e-6
-        self.attraction=5
+        self.reduction=0.5
+        self.min_dist=1
+        self.attraction=0.5
+        self.good_len=100
+
+        self.max_force = 10000000
 
     def coulomb_force(self,gr):
+        grid = gr.build_grid()
         for node_1 in gr.nodes:
             if node_1.fixed:
                 continue
             total_force=[0,0]
-            for node_2 in gr.nodes:
-                if node_1==node_2:
-                    continue
-                x1,y1=node_1.pos
-                x2,y2=node_2.pos
+            x1, y1 = node_1.pos
+            cx_1=int(x1//gr.cell_size)
+            cy_1=int(y1//gr.cell_size)
+            keys=[(cx_1+i,cy_1+j) for i in range(-1,2) for j in range(-1,2)]
+            # print(keys)
+            for key in keys:
+                if key in grid:
 
-                rx=x1-x2
-                ry=y1-y2
-                if rx==0:rx=self.min_dist
-                if ry==0:ry=self.min_dist
-                sqr_c=(ry/rx)*(ry/rx)
+                    cell = grid[key]
+                    for index in cell:
+                        node_2=gr.nodes[index]
+                        if node_1==node_2:
+                            continue
 
-                d=dist((x1,y1),(x2,y2))
-                if d==0:d=self.min_dist
-                force= self.repulsion / (d * d)
+                        x2,y2=node_2.pos
 
-                sqr_force = force*force
-                sqr_force_x = sqr_force/(1+sqr_c)
-                sqr_force_y = sqr_force - sqr_force_x
 
-                force_x = sqrt(sqr_force_x) * (1 if rx > 0 else -1)
-                force_y = sqrt(sqr_force_y) * (1 if ry > 0 else -1)
 
-                total_force[0]+=force_x
-                total_force[1]+=force_y
+                        rx=x1-x2
+                        ry=y1-y2
+                        if abs(rx)<self.min_dist:rx=self.min_dist
+                        if abs(ry)<self.min_dist:ry=self.min_dist
+                        sqr_c=(ry/rx)*(ry/rx)
+
+                        d=dist((x1,y1),(x2,y2))
+                        if d==0:
+                            rx=random.uniform(-1,1)
+                            ry=random.uniform(-1,1)
+
+                        if d<self.min_dist:d=self.min_dist
+                        force= self.repulsion / (d * d)
+                        if force>self.max_force:
+                            force=self.max_force
+
+
+
+                        sqr_force = force*force
+                        sqr_force_x = sqr_force/(1+sqr_c)
+                        sqr_force_y = sqr_force - sqr_force_x
+
+                        force_x = sqrt(sqr_force_x) * (1 if rx > 0 else -1)
+                        force_y = sqrt(sqr_force_y) * (1 if ry > 0 else -1)
+
+
+                        total_force[0]+=force_x
+                        total_force[1]+=force_y
             node_1.acc[0] += total_force[0]
             node_1.acc[1] += total_force[1]
 
@@ -199,6 +273,7 @@ class Physics:
             u,v=edge.u,edge.v
             node_1=gr.nodes[u]
             node_2=gr.nodes[v]
+
             x1, y1 = node_1.pos
             x2, y2 = node_2.pos
 
@@ -211,14 +286,20 @@ class Physics:
             sqr_c = (ry / rx) * (ry / rx)
 
             d = dist((x1, y1), (x2, y2))
-            force=d*self.attraction
-
+            if d<self.good_len:
+                k=-1
+            else:
+                k=1
+            force = d * self.attraction
             sqr_force = force * force
             sqr_force_x = sqr_force / (1 + sqr_c)
             sqr_force_y = sqr_force - sqr_force_x
 
-            force_x = sqrt(sqr_force_x) * (-1 if rx > 0 else 1)
-            force_y = sqrt(sqr_force_y) * (-1 if ry > 0 else 1)
+            force_x = sqrt(sqr_force_x) * (-k if rx > 0 else k)
+            force_y = sqrt(sqr_force_y) * (-k if ry > 0 else k)
+
+            # force_x = sqrt(sqr_force_x) * (-1 if rx > 0 else 1)
+            # force_y = sqrt(sqr_force_y) * (-1 if ry > 0 else 1)
 
             node_1.acc[0]+=force_x
             node_1.acc[1]+=force_y
@@ -231,8 +312,8 @@ class Physics:
             if node.fixed:
                 continue
             vx,vy=node.vel
-            anti_force_x=vx*self.reduction
-            anti_force_y=vy*self.reduction
+            anti_force_x=vx*(-self.reduction)
+            anti_force_y=vy*(-self.reduction)
 
             node.acc[0]+=anti_force_x
             node.acc[1]+=anti_force_y
@@ -249,7 +330,7 @@ class Camera:
         self.y=0
         self.zoom=1
         self.min_zoom=0.1
-        self.max_zoom=5
+        self.max_zoom=50
         self.pan_start_x = None  # Экранная координата мыши в момент нажатия
         self.pan_start_y = None
         self.pan_start_cam_x = None  # Состояние камеры в момент нажатия
@@ -385,6 +466,7 @@ class EditorState:
         self.start_node=None
         self.end_node=None
         self.physics=False
+        self.show_grid=False
 
     def link_mode_off(self):
         self.link_mode=False
@@ -402,9 +484,6 @@ class EditorState:
             if self.selected_node != self.start_node:
                 self.end_node = self.selected_node
         state.selected_node = None
-
-
-
 
 
 
@@ -452,7 +531,6 @@ graph=Graph()
 camera = Camera()
 physics = Physics()
 
-
 algorithm=AlgorithmController()
 
 running=True
@@ -495,6 +573,9 @@ while running:
                 camera.x=0
                 camera.y=0
                 camera.zoom=1
+
+            if event.key == pygame.K_g:
+                state.show_grid = not state.show_grid
 
 
 
@@ -551,6 +632,7 @@ while running:
         if event.type == pygame.MOUSEBUTTONUP:
             if event.button == 1:
                 if state.selected_node is not None:
+                    print(graph.nodes[state.selected_node].pos)
                     graph.nodes[state.selected_node].fixed = False
                     graph.nodes[state.selected_node].vel=[0,0]
                 state.selected_node = None
@@ -582,7 +664,8 @@ while running:
 
 
     screen.fill('white')
-
+    if state.show_grid:
+        graph.draw_grid(camera)
     if state.visualisation:
         graph.draw(camera,
                    algorithm.visited_nodes,

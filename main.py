@@ -1,6 +1,7 @@
 import pygame
 import sys
 import random
+import json
 
 from algorithms import bfs, dfs
 from math import dist,sqrt
@@ -51,7 +52,7 @@ class Graph:
     def __init__(self):
         self.nodes=[]
         self.edges=[]
-        self.cell_size = 200
+        self.cell_size = 300
 
     def __str__(self):
         return f'nodes {self.nodes} \n edges {self.edges}'
@@ -127,13 +128,7 @@ class Graph:
             pygame.draw.circle(screen, 'darkgrey', node_screen, radius, 4)
 
 
-    # def draw_grid(self):
-    #     if not state.show_grid:
-    #         return
-    #     w,h=screen.get_size()
-    #
-    #     top_left=(camera.x,camera.y)
-    #     bottom_right=(camera.x+w/camera.zoom,camera.y+h/camera.zoom)
+
 
     def draw_grid(self, cam):
         if not state.show_grid:
@@ -159,7 +154,39 @@ class Graph:
             pygame.draw.line(screen,(200,200,200),(0,screen_y),(w,screen_y))
 
 
+    def save(self):
+        nodes_information=[]
+        for node in self.nodes:
+            nodes_information.append(node.pos)
 
+        edges_information=[]
+        for edge in self.edges:
+            edges_information.append((edge.u,edge.v))
+
+        data = {
+            'nodes':nodes_information,
+            'edges':edges_information
+        }
+
+        with open("saves/save.json", "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+
+        print(f"Сохранено: {len(self.nodes)} вершин, {len(self.edges)} рёбер")
+
+    def load(self):
+        with open("saves/save.json", "r") as f:
+            data = json.load(f)
+
+        self.nodes = []
+        self.edges = []
+
+        for pos in data["nodes"]:
+            self.nodes.append(Node(pos[0], pos[1]))
+
+        for edge in data["edges"]:
+            self.edges.append(Edge(edge[0], edge[1]))
+
+        print(f"Загружено: {len(self.nodes)} вершин, {len(self.edges)} рёбер")
 
 
     def build_adjacency_list(self):
@@ -184,7 +211,7 @@ class Graph:
         for node in self.nodes:
             node.acc=[0,0]
 
-        phys.coulomb_force(self)
+        phys.coulomb_force_apply(self)
         phys.force_attraction(self)
         phys.force_reduction(self)
 
@@ -198,8 +225,11 @@ class Graph:
             cy = int(node_y // self.cell_size)
             key = (cx, cy)
             if key not in grid:
-                grid[key] = []
-            grid[key].append(i)
+                grid[key] = [[],[0,0],0]
+            grid[key][0].append(i)
+            grid[key][1][0]+=node_x
+            grid[key][1][1]+=node_y
+            grid[key][2]+=1
         return grid
 
 
@@ -207,13 +237,42 @@ class Physics:
     def __init__(self):
         self.repulsion=1000000
         self.reduction=0.5
-        self.min_dist=1
+        self.min_dist=10
         self.attraction=0.5
         self.good_len=100
 
         self.max_force = 10000000
 
-    def coulomb_force(self,gr):
+
+    def coulomb_force(self,x1,y1,x2,y2,count):
+        rx = x1 - x2
+        ry = y1 - y2
+        if abs(rx) < self.min_dist: rx = self.min_dist
+        if abs(ry) < self.min_dist: ry = self.min_dist
+        sqr_c = (ry / rx) * (ry / rx)
+
+        d = dist((x1, y1), (x2, y2))
+        if d == 0:
+            rx = random.uniform(-1, 1)
+            ry = random.uniform(-1, 1)
+
+        if d < self.min_dist: d = self.min_dist
+        force = self.repulsion * count / (d * d)
+        if force > self.max_force:
+            force = self.max_force
+
+        sqr_force = force * force
+        sqr_force_x = sqr_force / (1 + sqr_c)
+        sqr_force_y = sqr_force - sqr_force_x
+
+        force_x = sqrt(sqr_force_x) * (1 if rx > 0 else -1)
+        force_y = sqrt(sqr_force_y) * (1 if ry > 0 else -1)
+
+        return force_x,force_y
+
+
+
+    def coulomb_force_apply(self,gr):
         grid = gr.build_grid()
         for node_1 in gr.nodes:
             if node_1.fixed:
@@ -222,49 +281,28 @@ class Physics:
             x1, y1 = node_1.pos
             cx_1=int(x1//gr.cell_size)
             cy_1=int(y1//gr.cell_size)
-            keys=[(cx_1+i,cy_1+j) for i in range(-1,2) for j in range(-1,2)]
-            # print(keys)
-            for key in keys:
-                if key in grid:
+            keys=set((cx_1+i,cy_1+j) for i in range(-1,2) for j in range(-1,2))
 
-                    cell = grid[key]
-                    for index in cell:
-                        node_2=gr.nodes[index]
-                        if node_1==node_2:
+            for key, cell in grid.items():
+                if key in keys:
+                    for index in cell[0]:
+                        node_2 = gr.nodes[index]
+                        if node_1 == node_2:
                             continue
+                        x2, y2 = node_2.pos
+                        force_x,force_y = self.coulomb_force(x1,y1,x2,y2,1)
+                        total_force[0] += force_x
+                        total_force[1] += force_y
+                else:
 
-                        x2,y2=node_2.pos
+                    x2,y2=cell[1]
+                    nodes_count=cell[2]
+                    force_x,force_y=self.coulomb_force(x1,y1,x2/nodes_count,y2/nodes_count,nodes_count)
 
-
-
-                        rx=x1-x2
-                        ry=y1-y2
-                        if abs(rx)<self.min_dist:rx=self.min_dist
-                        if abs(ry)<self.min_dist:ry=self.min_dist
-                        sqr_c=(ry/rx)*(ry/rx)
-
-                        d=dist((x1,y1),(x2,y2))
-                        if d==0:
-                            rx=random.uniform(-1,1)
-                            ry=random.uniform(-1,1)
-
-                        if d<self.min_dist:d=self.min_dist
-                        force= self.repulsion / (d * d)
-                        if force>self.max_force:
-                            force=self.max_force
+                    total_force[0] += force_x
+                    total_force[1] += force_y
 
 
-
-                        sqr_force = force*force
-                        sqr_force_x = sqr_force/(1+sqr_c)
-                        sqr_force_y = sqr_force - sqr_force_x
-
-                        force_x = sqrt(sqr_force_x) * (1 if rx > 0 else -1)
-                        force_y = sqrt(sqr_force_y) * (1 if ry > 0 else -1)
-
-
-                        total_force[0]+=force_x
-                        total_force[1]+=force_y
             node_1.acc[0] += total_force[0]
             node_1.acc[1] += total_force[1]
 
@@ -297,9 +335,6 @@ class Physics:
 
             force_x = sqrt(sqr_force_x) * (-k if rx > 0 else k)
             force_y = sqrt(sqr_force_y) * (-k if ry > 0 else k)
-
-            # force_x = sqrt(sqr_force_x) * (-1 if rx > 0 else 1)
-            # force_y = sqrt(sqr_force_y) * (-1 if ry > 0 else 1)
 
             node_1.acc[0]+=force_x
             node_1.acc[1]+=force_y
@@ -536,6 +571,7 @@ algorithm=AlgorithmController()
 running=True
 
 while running:
+
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
             running = False
@@ -576,6 +612,13 @@ while running:
 
             if event.key == pygame.K_g:
                 state.show_grid = not state.show_grid
+
+            if event.key == pygame.K_F5:
+                graph.save()
+            if event.key == pygame.K_F9:
+                graph.load()
+
+
 
 
 
@@ -632,7 +675,7 @@ while running:
         if event.type == pygame.MOUSEBUTTONUP:
             if event.button == 1:
                 if state.selected_node is not None:
-                    print(graph.nodes[state.selected_node].pos)
+                    # print(graph.nodes[state.selected_node].pos)
                     graph.nodes[state.selected_node].fixed = False
                     graph.nodes[state.selected_node].vel=[0,0]
                 state.selected_node = None

@@ -1,3 +1,5 @@
+from tabnanny import check
+
 import pygame
 import sys
 import random
@@ -52,7 +54,9 @@ class Graph:
     def __init__(self):
         self.nodes=[]
         self.edges=[]
-        self.cell_size = 300
+        self.cell_size = 200
+        self.quadtree_squares=[]
+        self.centers_of_mass=[]
 
     def __str__(self):
         return f'nodes {self.nodes} \n edges {self.edges}'
@@ -188,7 +192,6 @@ class Graph:
 
         print(f"Загружено: {len(self.nodes)} вершин, {len(self.edges)} рёбер")
 
-
     def build_adjacency_list(self):
         graph = [[] for _ in range(len(self.nodes))]
         for edge in self.edges:
@@ -210,45 +213,173 @@ class Graph:
     def update_physics(self,phys):
         for node in self.nodes:
             node.acc=[0,0]
-
         phys.coulomb_force_apply(self)
         phys.force_attraction(self)
         phys.force_reduction(self)
-
+        phys.reduction+=0.01
         self.apply_acceleration(1/60)
 
-    def build_grid(self):
-        grid = {}
-        for i, node in enumerate(self.nodes):
-            node_x, node_y = node.pos
-            cx = int(node_x // self.cell_size)
-            cy = int(node_y // self.cell_size)
-            key = (cx, cy)
-            if key not in grid:
-                grid[key] = [[],[0,0],0]
-            grid[key][0].append(i)
-            grid[key][1][0]+=node_x
-            grid[key][1][1]+=node_y
-            grid[key][2]+=1
-        return grid
+    def find_quadtree_root(self):
+        min_x=min_y=float('inf')
+        max_x=max_y=float('-inf')
+        for node in self.nodes:
+            x,y=node.pos
+            if x<min_x:
+                min_x=x
+            if x>max_x:
+                max_x=x
+            if y < min_y:
+                min_y = y
+            if y > max_y:
+                max_y = y
+        side_x=max_x-min_x
+        side_y=max_y-min_y
+        side=max(side_x,side_y)
+        return min_x,min_y,side
+
+    def build_quadtree(self):
+        eps=1e-9
+        self.quadtree_squares = []
+
+        root_square_x1,root_square_y1,root_square_size = self.find_quadtree_root()
+        root_square_x2,root_square_y2 = root_square_x1+root_square_size,root_square_y1+root_square_size
+        self.quadtree_squares.append(((root_square_x1,root_square_y1),(root_square_x2,root_square_y2)))
+
+
+        quadtree_root=QuadTree(root_square_x1,root_square_y1,root_square_x2,root_square_y2)
+
+        for i in range(len(self.nodes)):
+            current_quadtree = quadtree_root
+            node_x,node_y=self.nodes[i].pos
+
+            while current_quadtree is not None:
+                current_quadtree.count+=1
+                current_quadtree.center_x+=node_x
+                current_quadtree.center_y+=node_y
+
+
+                if current_quadtree.count>current_quadtree.capacity and not current_quadtree.is_divided:
+                    if current_quadtree.level<=current_quadtree.max_level:
+                        current_quadtree.divide(self)
+                    else:
+                        self.nodes[current_quadtree.nodes[0]].pos[0]+=random.uniform(-1, 1)
+                        self.nodes[current_quadtree.nodes[0]].pos[0]+=random.uniform(-1, 1)
+                if current_quadtree.is_divided:
+                    for child in current_quadtree.childs:
+                        x1,y1,x2,y2 = child.boundary
+                        if x1-eps<=node_x<=x2+eps and y1-eps<=node_y<=y2+eps:
+
+                            current_quadtree = child
+                            break
+
+                else:
+                    current_quadtree.nodes.append(i)
+                    current_quadtree = None
+
+        self.centers_of_mass=[]
+        stack=[quadtree_root]
+
+        while stack:
+            current=stack.pop()
+            if current.count>0:
+                c_x=current.center_x/current.count
+                c_y=current.center_y/current.count
+                self.centers_of_mass.append(((c_x,c_y),current.level,current.count))
+            if current.childs:
+                stack+=current.childs
+
+
+
+        return quadtree_root
+
+    def draw_quadtree(self,cam,phys):
+        for point1,point2 in self.quadtree_squares:
+            x1,y1 = cam.real_to_screen(point1)
+            x2,y2 = cam.real_to_screen(point2)
+
+            side = x2-x1
+            pygame.draw.rect(screen, (200, 200, 200),
+                             (x1,y1,side,side), 2)
+
+        for center_of_mass,level,count in self.centers_of_mass:
+
+            x_center, y_center = cam.real_to_screen(center_of_mass)
+            if level == 1:
+                pygame.draw.circle(screen,'blue',(x_center,y_center),(1*count)*cam.zoom)
+            elif level == 2:
+                pygame.draw.circle(screen, 'green', (x_center, y_center), (1 * count) * cam.zoom)
+            else:
+                pygame.draw.circle(screen, 'red', (x_center, y_center), (1 * count) * cam.zoom)
+
+
+
+
+class QuadTree:
+    def __init__(self,x1,y1,x2,y2):
+        self.boundary=(x1,y1,x2,y2)
+        self.side = x2-x1
+        self.capacity = 1
+        self.is_divided = False
+        self.childs= []
+        self.nodes = []
+        self.count = 0
+        self.center_x=0
+        self.center_y=0
+        self.level=1
+        self.max_level=20
+
+
+    def divide(self,gr):
+        eps = 1e-9
+        side = self.side / 2
+        x, y = self.boundary[0], self.boundary[1]
+        positions = [(x, y), (x + side, y), (x, y + side), (x + side, y + side)]
+
+        for pos_x,pos_y in positions:
+            child = QuadTree(pos_x,pos_y,pos_x+side,pos_y+side)
+            child.level=self.level+1
+            self.childs.append(child)
+            gr.quadtree_squares.append(((pos_x,pos_y),(pos_x+side,pos_y+side)))
+
+        for i in self.nodes:
+            node_x,node_y=gr.nodes[i].pos
+            for j, (pos_x, pos_y) in enumerate(positions):
+                if pos_x-eps<=node_x<=pos_x+side+eps and pos_y-eps<=node_y<=pos_y+side+eps:
+                    self.childs[j].nodes.append(i)
+                    self.childs[j].count+=1
+                    self.childs[j].center_x += node_x
+                    self.childs[j].center_y += node_y
+                    break
+
+        self.nodes=[]
+        self.is_divided = True
+
+
+    def check_if_node_in_boundary(self,coordinates):
+        x,y=coordinates
+        bx1,by1,bx2,by2=self.boundary
+        eps = 1e-9
+        return bx1-eps<=x<=bx2+eps and by1-eps<=y<=by2+eps
+
+
+
 
 
 class Physics:
     def __init__(self):
         self.repulsion=1000000
-        self.reduction=0.5
-        self.min_dist=10
-        self.attraction=0.5
-        self.good_len=100
-
+        self.reduction=0
+        self.min_dist=5
+        self.attraction=30
+        self.good_len=20
         self.max_force = 10000000
 
 
     def coulomb_force(self,x1,y1,x2,y2,count):
         rx = x1 - x2
         ry = y1 - y2
-        if abs(rx) < self.min_dist: rx = self.min_dist
-        if abs(ry) < self.min_dist: ry = self.min_dist
+        if abs(rx) < self.min_dist:  rx = random.uniform(-1,1)
+        if abs(ry) < self.min_dist:  rx = random.uniform(-1,1)
         sqr_c = (ry / rx) * (ry / rx)
 
         d = dist((x1, y1), (x2, y2))
@@ -271,40 +402,56 @@ class Physics:
         return force_x,force_y
 
 
-
     def coulomb_force_apply(self,gr):
-        grid = gr.build_grid()
-        for node_1 in gr.nodes:
-            if node_1.fixed:
+        quadtree = gr.build_quadtree() # корень дерева
+        theta = 1
+        for i,node in enumerate(gr.nodes):
+            if node.fixed:
                 continue
+            x1, y1 = node.pos
             total_force=[0,0]
-            x1, y1 = node_1.pos
-            cx_1=int(x1//gr.cell_size)
-            cy_1=int(y1//gr.cell_size)
-            keys=set((cx_1+i,cy_1+j) for i in range(-1,2) for j in range(-1,2))
+            stack=[quadtree]
+            while stack:
+                current = stack.pop()
+                count = current.count
+                if count == 0:
+                    continue
 
-            for key, cell in grid.items():
-                if key in keys:
-                    for index in cell[0]:
-                        node_2 = gr.nodes[index]
-                        if node_1 == node_2:
-                            continue
-                        x2, y2 = node_2.pos
-                        force_x,force_y = self.coulomb_force(x1,y1,x2,y2,1)
+                x2 = current.center_x / count
+                y2 = current.center_y / count
+                if not current.is_divided:
+                    if current.check_if_node_in_boundary((x1,y1)):
+                        continue
+                    else:
+                        force_x,force_y = self.coulomb_force(x1,y1,x2,y2,count)
                         total_force[0] += force_x
                         total_force[1] += force_y
                 else:
+                    side=current.side
+                    d=dist((x1,y1),(x2,y2))
+                    if d>0 and side/d<theta: # тут d>0 исключительно чтобы не было ошибки при ==0, т.к. при d==0 side/d < theta невозможно
+                        if current.check_if_node_in_boundary((x1,y1)):
+                            another_x2 = (current.center_x-x1) / (count-1)
+                            another_y2 = (current.center_y-y1) / (count-1)
+                            force_x, force_y = self.coulomb_force(x1, y1, another_x2, another_y2, count-1)
 
-                    x2,y2=cell[1]
-                    nodes_count=cell[2]
-                    force_x,force_y=self.coulomb_force(x1,y1,x2/nodes_count,y2/nodes_count,nodes_count)
+                        else:
+                            force_x,force_y = self.coulomb_force(x1,y1,x2,y2,count)
 
-                    total_force[0] += force_x
-                    total_force[1] += force_y
+                        total_force[0] += force_x
+                        total_force[1] += force_y
+                    else:
+                        stack+=current.childs
 
 
-            node_1.acc[0] += total_force[0]
-            node_1.acc[1] += total_force[1]
+            node.acc[0] += total_force[0]
+            node.acc[1] += total_force[1]
+
+
+
+
+
+
 
     def force_attraction(self,gr):
         for edge in gr.edges:
@@ -324,17 +471,18 @@ class Physics:
             sqr_c = (ry / rx) * (ry / rx)
 
             d = dist((x1, y1), (x2, y2))
-            if d<self.good_len:
-                k=-1
-            else:
-                k=1
-            force = d * self.attraction
+            force = (d - self.good_len) * self.attraction
+
             sqr_force = force * force
             sqr_force_x = sqr_force / (1 + sqr_c)
             sqr_force_y = sqr_force - sqr_force_x
 
-            force_x = sqrt(sqr_force_x) * (-k if rx > 0 else k)
-            force_y = sqrt(sqr_force_y) * (-k if ry > 0 else k)
+            force_x = sqrt(sqr_force_x) * (-1 if rx > 0 else 1)
+            force_y = sqrt(sqr_force_y) * (-1 if ry > 0 else 1)
+
+            if force < 0:
+                force_x = -force_x
+                force_y = -force_y
 
             node_1.acc[0]+=force_x
             node_1.acc[1]+=force_y
@@ -352,6 +500,11 @@ class Physics:
 
             node.acc[0]+=anti_force_x
             node.acc[1]+=anti_force_y
+
+
+
+
+
 
 
 
@@ -501,7 +654,8 @@ class EditorState:
         self.start_node=None
         self.end_node=None
         self.physics=False
-        self.show_grid=False
+        self.show_grid=True
+        self.show_quadtree=False
 
     def link_mode_off(self):
         self.link_mode=False
@@ -519,15 +673,6 @@ class EditorState:
             if self.selected_node != self.start_node:
                 self.end_node = self.selected_node
         state.selected_node = None
-
-
-
-
-
-
-
-
-
 
 
 def new_edge():
@@ -570,6 +715,12 @@ algorithm=AlgorithmController()
 
 running=True
 
+
+
+
+
+
+
 while running:
 
     for event in pygame.event.get():
@@ -604,21 +755,30 @@ while running:
                 print(f"Визуализация: {'ВКЛ' if state.visualisation else 'ВЫКЛ'}")
             if event.key == pygame.K_f:
                 state.physics = not state.physics
+                physics.reduction=0
 
             if event.key == pygame.K_r:
                 camera.x=0
                 camera.y=0
                 camera.zoom=1
+                graph.nodes=[]
+                graph.edges=[]
 
             if event.key == pygame.K_g:
                 state.show_grid = not state.show_grid
+            if event.key == pygame.K_h:
+                state.show_quadtree = not state.show_quadtree
 
             if event.key == pygame.K_F5:
                 graph.save()
             if event.key == pygame.K_F9:
                 graph.load()
 
+            if event.key == pygame.K_UP:
+                physics.repulsion *= 10
 
+            if event.key == pygame.K_DOWN:
+                physics.repulsion /= 10
 
 
 
@@ -701,14 +861,18 @@ while running:
         if state.selected_node<len(graph.nodes):
             graph.nodes[state.selected_node].pos = camera.screen_to_real(pygame.mouse.get_pos())
 
-
+    screen.fill('white')
     if state.physics:
         graph.update_physics(physics)
 
 
-    screen.fill('white')
+    if state.show_quadtree:
+        graph.draw_quadtree(camera, physics)
+
+
     if state.show_grid:
         graph.draw_grid(camera)
+
     if state.visualisation:
         graph.draw(camera,
                    algorithm.visited_nodes,
